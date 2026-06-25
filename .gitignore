@@ -1,0 +1,16 @@
+**/.DS_Store
+**/.cache/
+**/.claude/
+**/.idea/
+**/.tools/
+**/build/
+**/cmake-build-*/
+**/compile_commands.json
+**/*.elf
+**/*.hex
+**/*.bin
+**/*.map
+**/*.list
+**/*.lst
+**/*.o
+**/*.d
