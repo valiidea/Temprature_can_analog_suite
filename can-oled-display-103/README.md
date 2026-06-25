@@ -1,112 +1,105 @@
 # CanOledDisplay103
 
-`CanOledDisplay103` 是 STM32F103C8T6 CAN 接收和 OLED 显示固件，用作 `TempBridge407` 的下位接收端。
+Bare-metal CLion/CMake project for STM32F103C8T6.
 
-主要功能：
+The firmware receives CAN frames on bxCAN through an SN65HVD230 transceiver, prints every received frame on USART1, and shows the latest temperature value on a 0.96 inch SSD1306 I2C OLED.
 
-- 使用 bxCAN 接收 F407 发出的温度帧
-- 在 SSD1306 OLED 上显示最新温度
-- 通过 USART1 输出 CAN 调试日志
-- 收到 `0x700` 标准帧后回复 `0x701`，用于 F407 链路检测
+## Default Settings
 
-## 默认配置
+- MCU clock: 72 MHz from an 8 MHz HSE crystal
+- CAN1 bitrate: 500 kbit/s
+- CAN filter: accept all standard and extended IDs
+- CAN link check: host sends standard ID `0x700`, F103 replies standard ID `0x701`
+- OLED: SSD1306 I2C, address 0x3C (write address byte 0x78), software I2C open-drain on PB6/PB7
+- UART: USART1, 115200 baud, 8 data bits, no parity, 1 stop bit
+- Temperature decode: upper-controller CAN ID `0x321`, DATA[0..3], big-endian signed integer, unit 0.01 C
+- PC13 LED: steady on until CAN link check succeeds; blinks while the last successful handshake is within 10 seconds
 
-- MCU：STM32F103C8T6
-- 时钟：8 MHz HSE，系统时钟 72 MHz
-- CAN：500 kbit/s
-- CAN 过滤器：接收所有标准帧和扩展帧
-- OLED：SSD1306 I2C，默认地址 `0x3C`，软件 I2C
-- UART：USART1，`115200-8N1`
-- 状态灯：PC13，低电平点亮
+## Pin Assignment
 
-## 外设分配
-
-| 功能 | STM32F103 引脚 | 连接 |
+| Function | STM32F103C8T6 pin | Connect to |
 | --- | --- | --- |
 | CAN1_RX | PB8 | SN65HVD230 R / RXD |
 | CAN1_TX | PB9 | SN65HVD230 D / TXD |
-| OLED_SCL | PB6 | SSD1306 SCL |
-| OLED_SDA | PB7 | SSD1306 SDA |
-| USART1_TX | PA9 | USB-UART RX |
-| USART1_RX | PA10 | USB-UART TX，可选 |
-| LED | PC13 | Blue Pill 板载 LED，低电平亮 |
+| OLED_SCL | PB6 | SSD1306 OLED SCL |
+| OLED_SDA | PB7 | SSD1306 OLED SDA |
+| LED | PC13 | Blue Pill onboard LED, active low |
+| USART1_TX | PA9 | USB-UART adapter RX |
+| USART1_RX | PA10 | USB-UART adapter TX, optional |
 | SWDIO | PA13 | ST-Link SWDIO |
 | SWCLK | PA14 | ST-Link SWCLK |
-| 3V3 | 3.3 V | CAN 收发器和 OLED 供电 |
-| GND | GND | 与 F407、CAN 模块、OLED 共地 |
-| CANH | 总线侧 | CANH |
-| CANL | 总线侧 | CANL |
+| 3V3 | 3.3 V | SN65HVD230 VCC |
+| GND | GND | SN65HVD230 GND and USB-UART GND |
+| CANH | Transceiver bus side | CANH bus |
+| CANL | Transceiver bus side | CANL bus |
 
-注意事项：
+Notes:
 
-- CAN1 已重映射到 PB8/PB9，避开 Blue Pill 的 PA11/PA12 USB 电路
-- 即使只做接收端，也要连接 PB9 到 CAN 收发器 TXD/D；CAN ACK 需要 TX 引脚参与
-- SN65HVD230 的 RS 建议接 GND，或使用模块默认高速模式
-- 只有在总线端点处才加 120 欧终端电阻
-- OLED 和 F103 必须共地，SCL/SDA 需要上拉；多数 OLED 模块已自带上拉
+- CAN1 is remapped to PB8/PB9 to avoid the Blue Pill USB D-/D+ circuit on PA11/PA12.
+- Even as a CAN receiver, keep CAN1_TX / PB9 connected to the transceiver TXD/D pin. The CAN controller uses it to send the ACK bit.
+- Tie SN65HVD230 RS to GND for high-speed mode, or use the module's default RS setting if it already provides one.
+- Add 120 ohm termination between CANH and CANL only if this node is at one end of the CAN bus.
+- Use 3.3 V UART levels. Do not connect 5 V logic directly to STM32 pins.
+- Power the OLED from 3.3 V and share GND with the STM32. The OLED driver now follows the provided 4-pin I2C example style: SCL/SDA are open-drain software I2C lines. Most OLED modules already include I2C pull-ups; if yours does not, add 4.7 kOhm pull-ups from PB6/PB7 to 3.3 V.
 
-## CAN 温度显示
+## CAN Link Check
 
-F103 主要解析 F407 的 `0x321` 温度帧：
-
-```text
-CAN ID = 0x321
-DATA[0..3] = int32，大端，温度，单位 0.01℃
-```
-
-例如 `25.30℃`：
+The minimal host-controller handshake is:
 
 ```text
-temperature_centi_c = 2530 = 0x000009E2
-DATA[0..3] = 00 00 09 E2
+Host -> F103:
+  CAN ID: 0x700 standard data frame
+  DLC: any value from 0 to 8
+  DATA: ignored
+
+F103 -> Host:
+  CAN ID: 0x701 standard data frame
+  DLC: 8
+  DATA: 46 31 30 33 4F 4B xx xx
+        F  1  0  3  O  K  rx counter low/high
 ```
 
-OLED 显示内容类似：
+When the `0x701` reply is transmitted successfully and ACKed on the CAN bus, the firmware treats the link as normal. PC13 then blinks. If no successful handshake occurs for 10 seconds, PC13 returns to steady on.
+
+## OLED Temperature Display
+
+The OLED shows:
 
 ```text
 CAN TEMP
-ID:321
+ID:123
 TEMP:25.3 C
 RX:1
 ```
 
-## CAN 链路检测
-
-F407 每秒发送一次测试帧：
+Temperature is decoded from the upper-controller temperature frame:
 
 ```text
-F407 -> F103
-标准帧 ID: 0x700
-DLC: 任意
-DATA: 任意
+CAN ID = 0x321
+temperature_centi_c = DATA[0] << 24 | DATA[1] << 16 | DATA[2] << 8 | DATA[3]
+temperature_celsius = temperature_centi_c / 100
 ```
 
-F103 收到后回复：
+For example, 25.30 C should be sent as decimal 2530, which is `00 00 09 E2` in the first four CAN data bytes. Legacy two-byte 0.1 C frames are still accepted as a fallback.
 
-```text
-F103 -> F407
-标准帧 ID: 0x701
-DLC: 8
-DATA: 46 31 30 33 4F 4B xx xx
-      F  1  0  3  O  K  计数低 计数高
-```
+## Build
 
-当 `0x701` 回复被 CAN 总线 ACK 后，F103 判定链路正常，PC13 进入闪烁状态；如果 10 秒内没有成功握手，PC13 回到常亮。
+The project uses CMake presets. In CLion, open this directory and choose the `debug` or `release` preset.
 
-## 构建
+From a terminal:
 
 ```sh
 cmake --preset debug
 cmake --build --preset debug
 ```
 
-生成文件：
+Generated files are placed in `build/debug/`:
 
-- `build/debug/CanOledDisplay103.elf`
-- `build/debug/CanOledDisplay103.hex`
-- `build/debug/CanOledDisplay103.bin`
+- `CanOledDisplay103.elf`
+- `CanOledDisplay103.hex`
+- `CanOledDisplay103.bin`
 
-## 串口日志示例
+## Example UART Output
 
 ```text
 CanOledDisplay103 CAN receiver
@@ -114,6 +107,7 @@ CAN receiver: 500 kbit/s, accept all IDs
 Link check: host sends std id 0x700, F103 replies std id 0x701
 USART1: 115200 8N1
 Waiting for CAN frames...
-CAN id=0x321 std data dlc=8 bytes=00 00 09 E2 B3 33 48 00
+CAN stat rx=0x00000000 tx=0x00000000 link=WAIT pong=0x00000000 pb8=H pb9=H ...
+CAN id=0x123 std data dlc=8 bytes=11 22 33 44 55 66 77 88
 CAN link OK: replied id=0x701 bytes=46 31 30 33 4F 4B 01 00
 ```
